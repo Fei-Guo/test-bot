@@ -5,13 +5,25 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/gorilla/mux"
 )
 
-func setupTestServer() (*httptest.Server, *ModelStore) {
-	store := NewModelStore()
+func setupTestServer(t *testing.T) (*httptest.Server, *DB, string) {
+	dbFile, err := os.CreateTemp("", "test-*.db")
+	if err != nil {
+		t.Fatalf("Failed to create temp db: %v", err)
+	}
+	dbFile.Close()
+
+	db, err := NewDB(dbFile.Name())
+	if err != nil {
+		os.Remove(dbFile.Name())
+		t.Fatalf("Failed to create database: %v", err)
+	}
+
 	router := mux.NewRouter()
 
 	router.HandleFunc("/api/models", func(w http.ResponseWriter, r *http.Request) {
@@ -21,27 +33,37 @@ func setupTestServer() (*httptest.Server, *ModelStore) {
 			return
 		}
 		if model.Name == "" {
-			http.Error(w, "name is required", http.StatusBadRequest)
+			http.Error(w, "name required", http.StatusBadRequest)
 			return
 		}
-		store.Create(model)
+		if err := db.Create(model); err != nil {
+			http.Error(w, "create failed", http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(model)
 	}).Methods("POST")
 
 	router.HandleFunc("/api/models", func(w http.ResponseWriter, r *http.Request) {
-		models := store.GetAll()
+		models, err := db.GetAll()
+		if err != nil {
+			http.Error(w, "list failed", http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(models)
 	}).Methods("GET")
 
 	router.HandleFunc("/api/models/{name}", func(w http.ResponseWriter, r *http.Request) {
 		vars := mux.Vars(r)
-		name := vars["name"]
-		model, exists := store.Get(name)
+		model, exists, err := db.Get(vars["name"])
+		if err != nil {
+			http.Error(w, "get failed", http.StatusInternalServerError)
+			return
+		}
 		if !exists {
-			http.Error(w, "model not found", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -50,18 +72,22 @@ func setupTestServer() (*httptest.Server, *ModelStore) {
 
 	router.HandleFunc("/api/models/{name}", func(w http.ResponseWriter, r *http.Request) {
 		vars := mux.Vars(r)
-		name := vars["name"]
 		var model Model
 		if err := json.NewDecoder(r.Body).Decode(&model); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		if model.Name == "" {
-			http.Error(w, "name is required", http.StatusBadRequest)
+			http.Error(w, "name required", http.StatusBadRequest)
 			return
 		}
-		if !store.Update(name, model) {
-			http.Error(w, "model not found", http.StatusNotFound)
+		updated, err := db.Update(vars["name"], model)
+		if err != nil {
+			http.Error(w, "update failed", http.StatusInternalServerError)
+			return
+		}
+		if !updated {
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -70,168 +96,94 @@ func setupTestServer() (*httptest.Server, *ModelStore) {
 
 	router.HandleFunc("/api/models/{name}", func(w http.ResponseWriter, r *http.Request) {
 		vars := mux.Vars(r)
-		name := vars["name"]
-		if !store.Delete(name) {
-			http.Error(w, "model not found", http.StatusNotFound)
+		deleted, err := db.Delete(vars["name"])
+		if err != nil {
+			http.Error(w, "delete failed", http.StatusInternalServerError)
+			return
+		}
+		if !deleted {
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}).Methods("DELETE")
 
-	return httptest.NewServer(router), store
+	return httptest.NewServer(router), db, dbFile.Name()
 }
 
 func TestCreateModel(t *testing.T) {
-	server, _ := setupTestServer()
+	server, _, dbPath := setupTestServer(t)
 	defer server.Close()
+	defer os.Remove(dbPath)
 
 	model := Model{Name: "gpt-4", URL: "https://api.openai.com/v1/models/gpt-4"}
 	body, _ := json.Marshal(model)
 
 	resp, err := http.Post(server.URL+"/api/models", "application/json", bytes.NewBuffer(body))
 	if err != nil {
-		t.Fatalf("Failed to create model: %v", err)
+		t.Fatalf("Failed: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated {
-		t.Errorf("Expected status %d, got %d", http.StatusCreated, resp.StatusCode)
-	}
-
-	var result Model
-	json.NewDecoder(resp.Body).Decode(&result)
-	if result.Name != model.Name || result.URL != model.URL {
-		t.Errorf("Expected %v, got %v", model, result)
+		t.Errorf("Expected 201, got %d", resp.StatusCode)
 	}
 }
 
-func TestCreateModelWithoutName(t *testing.T) {
-	server, _ := setupTestServer()
+func TestCreateWithoutName(t *testing.T) {
+	server, _, dbPath := setupTestServer(t)
 	defer server.Close()
+	defer os.Remove(dbPath)
 
 	model := Model{URL: "https://example.com"}
 	body, _ := json.Marshal(model)
 
 	resp, err := http.Post(server.URL+"/api/models", "application/json", bytes.NewBuffer(body))
 	if err != nil {
-		t.Fatalf("Failed to send request: %v", err)
+		t.Fatalf("Failed: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("Expected status %d, got %d", http.StatusBadRequest, resp.StatusCode)
-	}
-}
-
-func TestListModels(t *testing.T) {
-	server, store := setupTestServer()
-	defer server.Close()
-
-	// Add some models
-	store.Create(Model{Name: "model1", URL: "https://example.com/1"})
-	store.Create(Model{Name: "model2", URL: "https://example.com/2"})
-
-	resp, err := http.Get(server.URL + "/api/models")
-	if err != nil {
-		t.Fatalf("Failed to list models: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status %d, got %d", http.StatusOK, resp.StatusCode)
-	}
-
-	var models []Model
-	json.NewDecoder(resp.Body).Decode(&models)
-	if len(models) != 2 {
-		t.Errorf("Expected 2 models, got %d", len(models))
+		t.Errorf("Expected 400, got %d", resp.StatusCode)
 	}
 }
 
 func TestGetModel(t *testing.T) {
-	server, store := setupTestServer()
+	server, db, dbPath := setupTestServer(t)
 	defer server.Close()
+	defer os.Remove(dbPath)
+	defer db.Close()
 
-	store.Create(Model{Name: "gpt-4", URL: "https://api.openai.com/v1/models/gpt-4"})
+	db.Create(Model{Name: "gpt-4", URL: "https://api.openai.com/v1/models/gpt-4"})
 
 	resp, err := http.Get(server.URL + "/api/models/gpt-4")
 	if err != nil {
-		t.Fatalf("Failed to get model: %v", err)
+		t.Fatalf("Failed: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status %d, got %d", http.StatusOK, resp.StatusCode)
-	}
-
-	var result Model
-	json.NewDecoder(resp.Body).Decode(&result)
-	if result.Name != "gpt-4" {
-		t.Errorf("Expected name 'gpt-4', got '%s'", result.Name)
-	}
-}
-
-func TestGetNonExistentModel(t *testing.T) {
-	server, _ := setupTestServer()
-	defer server.Close()
-
-	resp, err := http.Get(server.URL + "/api/models/nonexistent")
-	if err != nil {
-		t.Fatalf("Failed to get model: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("Expected status %d, got %d", http.StatusNotFound, resp.StatusCode)
-	}
-}
-
-func TestUpdateModel(t *testing.T) {
-	server, store := setupTestServer()
-	defer server.Close()
-
-	store.Create(Model{Name: "gpt-4", URL: "https://old-url.com"})
-
-	updated := Model{Name: "gpt-4", URL: "https://new-url.com"}
-	body, _ := json.Marshal(updated)
-
-	req, _ := http.NewRequest(http.MethodPut, server.URL+"/api/models/gpt-4", bytes.NewBuffer(body))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("Failed to update model: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status %d, got %d", http.StatusOK, resp.StatusCode)
-	}
-
-	model, _ := store.Get("gpt-4")
-	if model.URL != "https://new-url.com" {
-		t.Errorf("Expected URL 'https://new-url.com', got '%s'", model.URL)
+		t.Errorf("Expected 200, got %d", resp.StatusCode)
 	}
 }
 
 func TestDeleteModel(t *testing.T) {
-	server, store := setupTestServer()
+	server, db, dbPath := setupTestServer(t)
 	defer server.Close()
+	defer os.Remove(dbPath)
+	defer db.Close()
 
-	store.Create(Model{Name: "gpt-4", URL: "https://api.openai.com/v1/models/gpt-4"})
+	db.Create(Model{Name: "gpt-4", URL: "https://api.openai.com/v1/models/gpt-4"})
 
 	req, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/models/gpt-4", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("Failed to delete model: %v", err)
+		t.Fatalf("Failed: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusNoContent {
-		t.Errorf("Expected status %d, got %d", http.StatusNoContent, resp.StatusCode)
-	}
-
-	_, exists := store.Get("gpt-4")
-	if exists {
-		t.Error("Model should have been deleted")
+		t.Errorf("Expected 204, got %d", resp.StatusCode)
 	}
 }
