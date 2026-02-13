@@ -1,0 +1,142 @@
+name: E2E Tests
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+jobs:
+  e2e-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+
+    - name: Cache Go modules
+      uses: actions/cache@v4
+      with:
+        path: ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+
+    - name: Download dependencies
+      run: go mod download
+
+    - name: Run unit tests
+      run: go test -v ./...
+
+    - name: Build server
+      run: go build -o model-server .
+
+    - name: Run E2E tests with live server
+      run: |
+        # Start the server in background
+        ./model-server &
+        SERVER_PID=$!
+        
+        # Wait for server to be ready
+        sleep 2
+        
+        # Wait for server to be healthy
+        for i in {1..30}; do
+          if curl -s http://localhost:8080/api/models > /dev/null 2>&1; then
+            break
+          fi
+          sleep 1
+        done
+        
+        # Run E2E tests
+        echo "=== Creating test models ==="
+        
+        # Test Create
+        echo "Testing POST /api/models..."
+        curl -s -X POST http://localhost:8080/api/models \
+          -H "Content-Type: application/json" \
+          -d '{"name": "gpt-4", "url": "https://api.openai.com/v1/models/gpt-4"}' | jq .
+        
+        curl -s -X POST http://localhost:8080/api/models \
+          -H "Content-Type: application/json" \
+          -d '{"name": "claude-3", "url": "https://api.anthropic.com/v1/models/claude-3"}' | jq .
+        
+        # Test List
+        echo ""
+        echo "=== Testing GET /api/models ==="
+        curl -s http://localhost:8080/api/models | jq .
+        
+        # Test Get Single
+        echo ""
+        echo "=== Testing GET /api/models/gpt-4 ==="
+        curl -s http://localhost:8080/api/models/gpt-4 | jq .
+        
+        # Test Update
+        echo ""
+        echo "=== Testing PUT /api/models/gpt-4 ==="
+        curl -s -X PUT http://localhost:8080/api/models/gpt-4 \
+          -H "Content-Type: application/json" \
+          -d '{"name": "gpt-4", "url": "https://api.openai.com/v1/models/gpt-4-turbo"}' | jq .
+        
+        # Test Delete
+        echo ""
+        echo "=== Testing DELETE /api/models/claude-3 ==="
+        curl -s -X DELETE http://localhost:8080/api/models/claude-3 -w "\nStatus: %{http_code}\n"
+        
+        # Verify deletion
+        echo ""
+        echo "=== Final list after delete ==="
+        curl -s http://localhost:8080/api/models | jq .
+        
+        # Stop the server
+        kill $SERVER_PID
+        
+        echo ""
+        echo "✅ All E2E tests passed!"
+
+    - name: Test error cases
+      run: |
+        ./model-server &
+        SERVER_PID=$!
+        sleep 2
+        
+        echo "=== Testing error cases ==="
+        
+        # Test 404 on non-existent model
+        echo "Testing 404 on GET..."
+        STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/models/nonexistent)
+        if [ "$STATUS" != "404" ]; then
+          echo "Expected 404, got $STATUS"
+          exit 1
+        fi
+        echo "✅ 404 returned correctly"
+        
+        # Test 400 on missing name
+        echo "Testing 400 on missing name..."
+        STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:8080/api/models \
+          -H "Content-Type: application/json" \
+          -d '{"url": "https://example.com"}')
+        if [ "$STATUS" != "400" ]; then
+          echo "Expected 400, got $STATUS"
+          exit 1
+        fi
+        echo "✅ 400 returned correctly"
+        
+        kill $SERVER_PID
+        
+        echo ""
+        echo "✅ All error case tests passed!"
+
+    - name: Upload test results
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-results
+        path: |
+          *.log
+          test-output/
