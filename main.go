@@ -1,12 +1,13 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
-	"sync"
 
 	"github.com/gorilla/mux"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 // Model represents the metadata for a model
@@ -15,75 +16,138 @@ type Model struct {
 	URL  string `json:"url"`
 }
 
-// ModelStore manages models in memory
-type ModelStore struct {
-	models map[string]Model
-	mu     sync.RWMutex
+// DB represents the database connection
+type DB struct {
+	conn *sql.DB
 }
 
-// NewModelStore creates a new ModelStore
-func NewModelStore() *ModelStore {
-	return &ModelStore{
-		models: make(map[string]Model),
+// NewDB creates a new database connection and initializes the schema
+func NewDB(dbPath string) (*DB, error) {
+	conn, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		return nil, err
 	}
+
+	// Create table if not exists
+	createTableSQL := `CREATE TABLE IF NOT EXISTS models (
+		name TEXT PRIMARY KEY,
+		url TEXT NOT NULL
+	);`
+	_, err = conn.Exec(createTableSQL)
+	if err != nil {
+		return nil, err
+	}
+
+	return &DB{conn: conn}, nil
+}
+
+// Close closes the database connection
+func (db *DB) Close() error {
+	return db.conn.Close()
 }
 
 // Create adds a new model
-func (s *ModelStore) Create(model Model) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.models[model.Name] = model
+func (db *DB) Create(model Model) error {
+	_, err := db.conn.Exec("INSERT INTO models (name, url) VALUES (?, ?)", model.Name, model.URL)
+	return err
 }
 
 // Get retrieves a model by name
-func (s *ModelStore) Get(name string) (Model, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	model, exists := s.models[name]
-	return model, exists
+func (db *DB) Get(name string) (Model, bool, error) {
+	var model Model
+	err := db.conn.QueryRow("SELECT name, url FROM models WHERE name = ?", name).Scan(&model.Name, &model.URL)
+	if err == sql.ErrNoRows {
+		return model, false, nil
+	}
+	if err != nil {
+		return model, false, err
+	}
+	return model, true, nil
 }
 
 // GetAll returns all models
-func (s *ModelStore) GetAll() []Model {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	models := make([]Model, 0, len(s.models))
-	for _, model := range s.models {
+func (db *DB) GetAll() ([]Model, error) {
+	rows, err := db.conn.Query("SELECT name, url FROM models")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var models []Model
+	for rows.Next() {
+		var model Model
+		if err := rows.Scan(&model.Name, &model.URL); err != nil {
+			return nil, err
+		}
 		models = append(models, model)
 	}
-	return models
+	return models, rows.Err()
 }
 
 // Update modifies an existing model
-func (s *ModelStore) Update(name string, model Model) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, exists := s.models[name]; !exists {
-		return false
+func (db *DB) Update(name string, model Model) (bool, error) {
+	// Check if model exists
+	var exists bool
+	err := db.conn.QueryRow("SELECT 1 FROM models WHERE name = ?", name).Scan(&exists)
+	if err == sql.ErrNoRows {
+		return false, nil
 	}
-	// If name changed, delete old entry
+	if err != nil {
+		return false, err
+	}
+
+	// If name changed, we need to delete old and insert new (since name is PK)
 	if name != model.Name {
-		delete(s.models, name)
+		// Use transaction for atomicity
+		tx, err := db.conn.Begin()
+		if err != nil {
+			return false, err
+		}
+		defer tx.Rollback()
+
+		_, err = tx.Exec("DELETE FROM models WHERE name = ?", name)
+		if err != nil {
+			return false, err
+		}
+		_, err = tx.Exec("INSERT INTO models (name, url) VALUES (?, ?)", model.Name, model.URL)
+		if err != nil {
+			return false, err
+		}
+
+		if err = tx.Commit(); err != nil {
+			return false, err
+		}
+	} else {
+		_, err = db.conn.Exec("UPDATE models SET url = ? WHERE name = ?", model.URL, name)
+		if err != nil {
+			return false, err
+		}
 	}
-	s.models[model.Name] = model
-	return true
+	return true, nil
 }
 
 // Delete removes a model
-func (s *ModelStore) Delete(name string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, exists := s.models[name]; !exists {
-		return false
+func (db *DB) Delete(name string) (bool, error) {
+	result, err := db.conn.Exec("DELETE FROM models WHERE name = ?", name)
+	if err != nil {
+		return false, err
 	}
-	delete(s.models, name)
-	return true
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rowsAffected > 0, nil
 }
 
-var store *ModelStore
+var db *DB
 
 func main() {
-	store = NewModelStore()
+	var err error
+	db, err = NewDB("models.db")
+	if err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
+	defer db.Close()
 
 	router := mux.NewRouter()
 
@@ -111,14 +175,25 @@ func createModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	store.Create(model)
+	if err := db.Create(model); err != nil {
+		log.Printf("Failed to create model: %v", err)
+		http.Error(w, "Failed to create model", http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(model)
 }
 
 func listModels(w http.ResponseWriter, r *http.Request) {
-	models := store.GetAll()
+	models, err := db.GetAll()
+	if err != nil {
+		log.Printf("Failed to list models: %v", err)
+		http.Error(w, "Failed to list models", http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(models)
 }
@@ -127,7 +202,12 @@ func getModel(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	name := vars["name"]
 
-	model, exists := store.Get(name)
+	model, exists, err := db.Get(name)
+	if err != nil {
+		log.Printf("Failed to get model: %v", err)
+		http.Error(w, "Failed to get model", http.StatusInternalServerError)
+		return
+	}
 	if !exists {
 		http.Error(w, "model not found", http.StatusNotFound)
 		return
@@ -152,7 +232,13 @@ func updateModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !store.Update(name, model) {
+	updated, err := db.Update(name, model)
+	if err != nil {
+		log.Printf("Failed to update model: %v", err)
+		http.Error(w, "Failed to update model", http.StatusInternalServerError)
+		return
+	}
+	if !updated {
 		http.Error(w, "model not found", http.StatusNotFound)
 		return
 	}
@@ -165,7 +251,13 @@ func deleteModel(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	name := vars["name"]
 
-	if !store.Delete(name) {
+	deleted, err := db.Delete(name)
+	if err != nil {
+		log.Printf("Failed to delete model: %v", err)
+		http.Error(w, "Failed to delete model", http.StatusInternalServerError)
+		return
+	}
+	if !deleted {
 		http.Error(w, "model not found", http.StatusNotFound)
 		return
 	}

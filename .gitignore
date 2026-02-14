@@ -1,0 +1,9 @@
+# Binaries
+model-server
+
+# Database files
+*.db
+
+# Go build cache
+*.test
+*.out
