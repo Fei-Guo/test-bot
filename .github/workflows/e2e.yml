@@ -9,7 +9,6 @@ on:
 jobs:
   e2e-test:
     runs-on: ubuntu-latest
-    
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -19,10 +18,10 @@ jobs:
       with:
         go-version: '1.21'
 
-    - name: Install SQLite dependencies
+    - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y gcc libsqlite3-dev
+        sudo apt-get install -y gcc libsqlite3-dev jq
 
     - name: Cache Go modules
       uses: actions/cache@v4
@@ -43,63 +42,94 @@ jobs:
 
     - name: Run E2E tests
       run: |
+        set -euo pipefail
+
+        PORT=8080
+        BASE_URL="http://localhost:${PORT}"
+        TIMEOUT=30
+
+        cleanup() {
+          local exit_code=$?
+          echo "Cleaning up..."
+          [[ -n "${SERVER_PID:-}" ]] && kill "$SERVER_PID" 2>/dev/null || true
+          rm -f models.db
+          exit $exit_code
+        }
+        trap cleanup EXIT
+
+        # Check port availability
+        if nc -z localhost "$PORT" 2>/dev/null; then
+          echo "ERROR: Port $PORT in use"
+          exit 1
+        fi
+
+        # Start server
+        echo "Starting server..."
         CGO_ENABLED=1 ./model-server &
         SERVER_PID=$!
-        sleep 2
-        
-        echo "=== Testing /metrics endpoint (initial state) ==="
-        curl -s http://localhost:8080/metrics | grep -E "models_(created|read|updated|deleted)_total"
-        
-        echo ""
-        echo "=== Creating models ==="
-        curl -s -X POST http://localhost:8080/api/models \
+
+        # Wait for server
+        for i in $(seq 1 $TIMEOUT); do
+          curl -sf --max-time 2 "${BASE_URL}/metrics" >/dev/null 2>&1 && break
+          kill -0 "$SERVER_PID" 2>/dev/null || { echo "Server died"; exit 1; }
+          [[ $i -eq $TIMEOUT ]] && { echo "Timeout waiting for server"; exit 1; }
+          sleep 1
+        done
+        echo "Server ready"
+
+        # Helper: Get metric value
+        get_metric() {
+          curl -sf --max-time 5 "${BASE_URL}/metrics" | grep "^$1 " | awk '{print $2}' || echo "0"
+        }
+
+        # Test 1: Initial metrics
+        echo "Testing initial metrics..."
+        [[ "$(get_metric models_created_total)" == "0" ]] || exit 1
+        [[ "$(get_metric models_read_total)" == "0" ]] || exit 1
+        [[ "$(get_metric models_updated_total)" == "0" ]] || exit 1
+        [[ "$(get_metric models_deleted_total)" == "0" ]] || exit 1
+        echo "Initial metrics OK"
+
+        # Test 2: Create models
+        echo "Creating models..."
+        curl -sf --max-time 5 -X POST "${BASE_URL}/api/models" \
           -H "Content-Type: application/json" \
-          -d '{"name": "gpt-4", "url": "https://api.openai.com/v1/models/gpt-4"}'
-        echo ""
+          -d '{"name": "gpt-4", "url": "https://api.openai.com/v1/models/gpt-4"}' | jq . > /dev/null
         
-        curl -s -X POST http://localhost:8080/api/models \
+        curl -sf --max-time 5 -X POST "${BASE_URL}/api/models" \
           -H "Content-Type: application/json" \
-          -d '{"name": "claude-3", "url": "https://api.anthropic.com/v1/models/claude-3"}'
-        echo ""
-        
-        echo ""
-        echo "=== Testing /metrics after creates (models_created_total should be 2) ==="
-        curl -s http://localhost:8080/metrics | grep "models_created_total" | grep -v "#"
-        
-        echo ""
-        echo "=== Testing GET /api/models (list) ==="
-        curl -s http://localhost:8080/api/models | jq .
-        
-        echo ""
-        echo "=== Testing GET /api/models/gpt-4 (get single) ==="
-        curl -s http://localhost:8080/api/models/gpt-4 | jq .
-        
-        echo ""
-        echo "=== Testing /metrics after reads (models_read_total should be 2) ==="
-        curl -s http://localhost:8080/metrics | grep "models_read_total" | grep -v "#"
-        
-        echo ""
-        echo "=== Testing PUT /api/models/gpt-4 (update) ==="
-        curl -s -X PUT http://localhost:8080/api/models/gpt-4 \
+          -d '{"name": "claude-3", "url": "https://api.anthropic.com/v1/models/claude-3"}' | jq . > /dev/null
+
+        # Test 3: Verify created metric
+        [[ "$(get_metric models_created_total)" == "2" ]] || { echo "Created metric failed"; exit 1; }
+        echo "Created metrics OK"
+
+        # Test 4: List models
+        LIST=$(curl -sf --max-time 5 "${BASE_URL}/api/models")
+        [[ $(echo "$LIST" | jq 'length') -eq 2 ]] || { echo "List count failed"; exit 1; }
+        echo "List OK"
+
+        # Test 5: Get single model
+        MODEL=$(curl -sf --max-time 5 "${BASE_URL}/api/models/gpt-4")
+        [[ $(echo "$MODEL" | jq -r '.name') == "gpt-4" ]] || { echo "Get model failed"; exit 1; }
+        echo "Get model OK"
+
+        # Test 6: Verify read metric
+        [[ "$(get_metric models_read_total)" == "2" ]] || { echo "Read metric failed"; exit 1; }
+        echo "Read metrics OK"
+
+        # Test 7: Update model
+        curl -sf --max-time 5 -X PUT "${BASE_URL}/api/models/gpt-4" \
           -H "Content-Type: application/json" \
-          -d '{"name": "gpt-4", "url": "https://api.openai.com/v1/models/gpt-4-turbo"}'
-        echo ""
+          -d '{"name": "gpt-4", "url": "https://api.openai.com/v1/models/gpt-4-turbo"}' > /dev/null
         
-        echo ""
-        echo "=== Testing /metrics after update (models_updated_total should be 1) ==="
-        curl -s http://localhost:8080/metrics | grep "models_updated_total" | grep -v "#"
+        [[ "$(get_metric models_updated_total)" == "1" ]] || { echo "Updated metric failed"; exit 1; }
+        echo "Updated metrics OK"
+
+        # Test 8: Delete model
+        curl -sf --max-time 5 -X DELETE "${BASE_URL}/api/models/claude-3" > /dev/null
         
-        echo ""
-        echo "=== Testing DELETE /api/models/claude-3 ==="
-        curl -s -X DELETE http://localhost:8080/api/models/claude-3 -w "\nStatus: %{http_code}\n"
-        
-        echo ""
-        echo "=== Testing /metrics after delete (models_deleted_total should be 1) ==="
-        curl -s http://localhost:8080/metrics | grep "models_deleted_total" | grep -v "#"
-        
-        echo ""
-        echo "=== All E2E tests passed! ==="
-        
-        # Cleanup
-        kill $SERVER_PID
-        rm -f models.db
+        [[ "$(get_metric models_deleted_total)" == "1" ]] || { echo "Deleted metric failed"; exit 1; }
+        echo "Deleted metrics OK"
+
+        echo "All E2E tests passed!"
