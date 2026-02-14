@@ -77,59 +77,121 @@ jobs:
         done
         echo "Server ready"
 
-        # Helper: Get metric value
+        # Helper: Get metric value (with retry for eventual consistency)
         get_metric() {
-          curl -sf --max-time 5 "${BASE_URL}/metrics" | grep "^$1 " | awk '{print $2}' || echo "0"
+          local name=$1
+          local expected=$2
+          local attempts=5
+          for i in $(seq 1 $attempts); do
+            local value
+            value=$(curl -sf --max-time 5 "${BASE_URL}/metrics" | grep "^${name} " | awk '{print $2}' || echo "0")
+            if [[ "$value" == "$expected" ]]; then
+              echo "$value"
+              return 0
+            fi
+            [[ $i -lt $attempts ]] && sleep 0.1
+          done
+          echo "0"
+          return 1
         }
+
+        # Helper: HTTP request with status code check
+        http_request() {
+          local method=$1
+          local url=$2
+          local expected_code=$3
+          local data=${4:-}
+          local response_file
+          response_file=$(mktemp)
+          local http_code
+          if [[ -n "$data" ]]; then
+            http_code=$(curl -sw '%{http_code}' -o "$response_file" --max-time 5 -X "$method" "$url" \
+              -H "Content-Type: application/json" -d "$data")
+          else
+            http_code=$(curl -sw '%{http_code}' -o "$response_file" --max-time 5 -X "$method" "$url")
+          fi
+          cat "$response_file"
+          rm -f "$response_file"
+          if [[ "$http_code" != "$expected_code" ]]; then
+            echo "ERROR: Expected HTTP $expected_code, got $http_code" >&2
+            return 1
+          fi
+        }
+
+        # Verify Prometheus format
+        echo "Verifying Prometheus metrics format..."
+        METRICS=$(curl -sf --max-time 5 "${BASE_URL}/metrics")
+        echo "$METRICS" | grep -E '^# (HELP|TYPE)' | grep -q models_ || { echo "Prometheus format validation failed"; exit 1; }
+        echo "Prometheus format OK"
 
         # Test 1: Initial metrics
         echo "Testing initial metrics..."
-        [[ "$(get_metric models_created_total)" == "0" ]] || exit 1
-        [[ "$(get_metric models_read_total)" == "0" ]] || exit 1
-        [[ "$(get_metric models_updated_total)" == "0" ]] || exit 1
-        [[ "$(get_metric models_deleted_total)" == "0" ]] || exit 1
-        echo "Initial metrics OK"
+        [[ "$(get_metric models_created_total 0)" == "0" ]] || { echo "Initial created metric failed"; exit 1; }
+        [[ "$(get_metric models_read_total 0)" == "0" ]] || { echo "Initial read metric failed"; exit 1; }
+        [[ "$(get_metric models_updated_total 0)" == "0" ]] || { echo "Initial updated metric failed"; exit 1; }
+        [[ "$(get_metric models_deleted_total 0)" == "0" ]] || { echo "Initial deleted metric failed"; exit 1; }
+        printf 'Initial metrics OK\n\n'
 
-        # Test 2: Create models
+        # Test 2: Create models with HTTP status validation
         echo "Creating models..."
-        curl -sf --max-time 5 -X POST "${BASE_URL}/api/models" \
-          -H "Content-Type: application/json" \
-          -d '{"name": "gpt-4", "url": "https://api.openai.com/v1/models/gpt-4"}' | jq . > /dev/null
+        RESPONSE=$(http_request POST "${BASE_URL}/api/models" 201 '{"name": "gpt-4", "url": "https://api.openai.com/v1/models/gpt-4"}')
+        echo "$RESPONSE" | jq -e '.name == "gpt-4" and .url == "https://api.openai.com/v1/models/gpt-4"' >/dev/null || { echo "Create response validation failed"; exit 1; }
         
-        curl -sf --max-time 5 -X POST "${BASE_URL}/api/models" \
-          -H "Content-Type: application/json" \
-          -d '{"name": "claude-3", "url": "https://api.anthropic.com/v1/models/claude-3"}' | jq . > /dev/null
+        RESPONSE=$(http_request POST "${BASE_URL}/api/models" 201 '{"name": "claude-3", "url": "https://api.anthropic.com/v1/models/claude-3"}')
+        echo "$RESPONSE" | jq -e '.name == "claude-3" and .url == "https://api.anthropic.com/v1/models/claude-3"' >/dev/null || { echo "Create response validation failed"; exit 1; }
+        printf 'Models created OK\n\n'
 
         # Test 3: Verify created metric
-        [[ "$(get_metric models_created_total)" == "2" ]] || { echo "Created metric failed"; exit 1; }
-        echo "Created metrics OK"
+        echo "Verifying created metric..."
+        [[ "$(get_metric models_created_total 2)" == "2" ]] || { echo "Created metric failed (expected 2)"; exit 1; }
+        printf 'Created metric OK\n\n'
 
         # Test 4: List models
-        LIST=$(curl -sf --max-time 5 "${BASE_URL}/api/models")
-        [[ $(echo "$LIST" | jq 'length') -eq 2 ]] || { echo "List count failed"; exit 1; }
-        echo "List OK"
+        echo "Listing models..."
+        LIST=$(http_request GET "${BASE_URL}/api/models" 200)
+        [[ $(echo "$LIST" | jq -e 'length') -eq 2 ]] || { echo "List count failed (expected 2)"; exit 1; }
+        printf 'List models OK\n\n'
 
         # Test 5: Get single model
-        MODEL=$(curl -sf --max-time 5 "${BASE_URL}/api/models/gpt-4")
-        [[ $(echo "$MODEL" | jq -r '.name') == "gpt-4" ]] || { echo "Get model failed"; exit 1; }
-        echo "Get model OK"
+        echo "Getting single model..."
+        MODEL=$(http_request GET "${BASE_URL}/api/models/gpt-4" 200)
+        [[ $(echo "$MODEL" | jq -e -r '.name') == "gpt-4" ]] || { echo "Get model name failed"; exit 1; }
+        [[ $(echo "$MODEL" | jq -e -r '.url') == "https://api.openai.com/v1/models/gpt-4" ]] || { echo "Get model URL failed"; exit 1; }
+        printf 'Get model OK\n\n'
 
-        # Test 6: Verify read metric
-        [[ "$(get_metric models_read_total)" == "2" ]] || { echo "Read metric failed"; exit 1; }
-        echo "Read metrics OK"
+        # Test 6: Verify read metric (1 list + 1 get = 2 reads)
+        echo "Verifying read metric..."
+        [[ "$(get_metric models_read_total 2)" == "2" ]] || { echo "Read metric failed (expected 2)"; exit 1; }
+        printf 'Read metric OK\n\n'
 
-        # Test 7: Update model
-        curl -sf --max-time 5 -X PUT "${BASE_URL}/api/models/gpt-4" \
-          -H "Content-Type: application/json" \
-          -d '{"name": "gpt-4", "url": "https://api.openai.com/v1/models/gpt-4-turbo"}' > /dev/null
+        # Test 7: Get non-existent model (404)
+        echo "Testing 404 response..."
+        http_code=$(curl -sw '%{http_code}' -o /dev/null --max-time 5 "${BASE_URL}/api/models/nonexistent" || true)
+        [[ "$http_code" == "404" ]] || { echo "Expected 404, got $http_code"; exit 1; }
+        printf '404 handling OK\n\n'
+
+        # Test 8: Update model with HTTP status validation
+        echo "Updating model..."
+        http_request PUT "${BASE_URL}/api/models/gpt-4" 200 '{"name": "gpt-4", "url": "https://api.openai.com/v1/models/gpt-4-turbo"}' >/dev/null
         
-        [[ "$(get_metric models_updated_total)" == "1" ]] || { echo "Updated metric failed"; exit 1; }
-        echo "Updated metrics OK"
-
-        # Test 8: Delete model
-        curl -sf --max-time 5 -X DELETE "${BASE_URL}/api/models/claude-3" > /dev/null
+        # Verify update persisted
+        MODEL=$(http_request GET "${BASE_URL}/api/models/gpt-4" 200)
+        [[ $(echo "$MODEL" | jq -e -r '.url') == "https://api.openai.com/v1/models/gpt-4-turbo" ]] || { echo "Update persistence failed"; exit 1; }
         
-        [[ "$(get_metric models_deleted_total)" == "1" ]] || { echo "Deleted metric failed"; exit 1; }
-        echo "Deleted metrics OK"
+        [[ "$(get_metric models_updated_total 1)" == "1" ]] || { echo "Updated metric failed (expected 1)"; exit 1; }
+        printf 'Update model OK\n\n'
 
+        # Test 9: Delete model with HTTP status validation
+        echo "Deleting model..."
+        http_request DELETE "${BASE_URL}/api/models/claude-3" 204 >/dev/null
+        
+        [[ "$(get_metric models_deleted_total 1)" == "1" ]] || { echo "Deleted metric failed (expected 1)"; exit 1; }
+        
+        # Verify deletion
+        http_code=$(curl -sw '%{http_code}' -o /dev/null --max-time 5 "${BASE_URL}/api/models/claude-3" || true)
+        [[ "$http_code" == "404" ]] || { echo "Expected 404 after delete, got $http_code"; exit 1; }
+        printf 'Delete model OK\n\n'
+
+        echo "======================================="
         echo "All E2E tests passed!"
+        echo "======================================="
