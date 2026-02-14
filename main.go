@@ -98,16 +98,30 @@ func (db *DB) Update(name string, model Model) (bool, error) {
 
 	// If name changed, we need to delete old and insert new (since name is PK)
 	if name != model.Name {
-		_, err = db.conn.Exec("DELETE FROM models WHERE name = ?", name)
+		// Use transaction for atomicity
+		tx, err := db.conn.Begin()
 		if err != nil {
 			return false, err
 		}
-		_, err = db.conn.Exec("INSERT INTO models (name, url) VALUES (?, ?)", model.Name, model.URL)
+		defer tx.Rollback()
+
+		_, err = tx.Exec("DELETE FROM models WHERE name = ?", name)
+		if err != nil {
+			return false, err
+		}
+		_, err = tx.Exec("INSERT INTO models (name, url) VALUES (?, ?)", model.Name, model.URL)
+		if err != nil {
+			return false, err
+		}
+
+		if err = tx.Commit(); err != nil {
+			return false, err
+		}
 	} else {
 		_, err = db.conn.Exec("UPDATE models SET url = ? WHERE name = ?", model.URL, name)
-	}
-	if err != nil {
-		return false, err
+		if err != nil {
+			return false, err
+		}
 	}
 	return true, nil
 }

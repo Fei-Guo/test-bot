@@ -112,8 +112,9 @@ func setupTestServer(t *testing.T) (*httptest.Server, *DB, string) {
 }
 
 func TestCreateModel(t *testing.T) {
-	server, _, dbPath := setupTestServer(t)
+	server, db, dbPath := setupTestServer(t)
 	defer server.Close()
+	defer db.Close()
 	defer os.Remove(dbPath)
 
 	model := Model{Name: "gpt-4", URL: "https://api.openai.com/v1/models/gpt-4"}
@@ -131,8 +132,9 @@ func TestCreateModel(t *testing.T) {
 }
 
 func TestCreateWithoutName(t *testing.T) {
-	server, _, dbPath := setupTestServer(t)
+	server, db, dbPath := setupTestServer(t)
 	defer server.Close()
+	defer db.Close()
 	defer os.Remove(dbPath)
 
 	model := Model{URL: "https://example.com"}
