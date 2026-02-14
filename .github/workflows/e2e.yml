@@ -47,20 +47,59 @@ jobs:
         SERVER_PID=$!
         sleep 2
         
-        # Create models
+        echo "=== Testing /metrics endpoint (initial state) ==="
+        curl -s http://localhost:8080/metrics | grep -E "models_(created|read|updated|deleted)_total"
+        
+        echo ""
+        echo "=== Creating models ==="
         curl -s -X POST http://localhost:8080/api/models \
           -H "Content-Type: application/json" \
           -d '{"name": "gpt-4", "url": "https://api.openai.com/v1/models/gpt-4"}'
+        echo ""
         
         curl -s -X POST http://localhost:8080/api/models \
           -H "Content-Type: application/json" \
           -d '{"name": "claude-3", "url": "https://api.anthropic.com/v1/models/claude-3"}'
+        echo ""
         
-        # List and verify
-        curl -s http://localhost:8080/api/models | jq . | grep "gpt-4"
+        echo ""
+        echo "=== Testing /metrics after creates (models_created_total should be 2) ==="
+        curl -s http://localhost:8080/metrics | grep "models_created_total" | grep -v "#"
+        
+        echo ""
+        echo "=== Testing GET /api/models (list) ==="
+        curl -s http://localhost:8080/api/models | jq .
+        
+        echo ""
+        echo "=== Testing GET /api/models/gpt-4 (get single) ==="
+        curl -s http://localhost:8080/api/models/gpt-4 | jq .
+        
+        echo ""
+        echo "=== Testing /metrics after reads (models_read_total should be 2) ==="
+        curl -s http://localhost:8080/metrics | grep "models_read_total" | grep -v "#"
+        
+        echo ""
+        echo "=== Testing PUT /api/models/gpt-4 (update) ==="
+        curl -s -X PUT http://localhost:8080/api/models/gpt-4 \
+          -H "Content-Type: application/json" \
+          -d '{"name": "gpt-4", "url": "https://api.openai.com/v1/models/gpt-4-turbo"}'
+        echo ""
+        
+        echo ""
+        echo "=== Testing /metrics after update (models_updated_total should be 1) ==="
+        curl -s http://localhost:8080/metrics | grep "models_updated_total" | grep -v "#"
+        
+        echo ""
+        echo "=== Testing DELETE /api/models/claude-3 ==="
+        curl -s -X DELETE http://localhost:8080/api/models/claude-3 -w "\nStatus: %{http_code}\n"
+        
+        echo ""
+        echo "=== Testing /metrics after delete (models_deleted_total should be 1) ==="
+        curl -s http://localhost:8080/metrics | grep "models_deleted_total" | grep -v "#"
+        
+        echo ""
+        echo "=== All E2E tests passed! ==="
         
         # Cleanup
         kill $SERVER_PID
         rm -f models.db
-        
-        echo "E2E tests passed!"
