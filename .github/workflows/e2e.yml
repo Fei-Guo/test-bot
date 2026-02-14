@@ -130,7 +130,8 @@ jobs:
         [[ "$(get_metric models_read_total 0)" == "0" ]] || { echo "Initial read metric failed"; exit 1; }
         [[ "$(get_metric models_updated_total 0)" == "0" ]] || { echo "Initial updated metric failed"; exit 1; }
         [[ "$(get_metric models_deleted_total 0)" == "0" ]] || { echo "Initial deleted metric failed"; exit 1; }
-        printf 'Initial metrics OK\n\n'
+        echo "Initial metrics OK"
+        echo
 
         # Test 2: Create models with HTTP status validation
         echo "Creating models..."
@@ -139,36 +140,42 @@ jobs:
         
         RESPONSE=$(http_request POST "${BASE_URL}/api/models" 201 '{"name": "claude-3", "url": "https://api.anthropic.com/v1/models/claude-3"}')
         echo "$RESPONSE" | jq -e '.name == "claude-3" and .url == "https://api.anthropic.com/v1/models/claude-3"' >/dev/null || { echo "Create response validation failed"; exit 1; }
-        printf 'Models created OK\n\n'
+        echo "Models created OK"
+        echo
 
         # Test 3: Verify created metric
         echo "Verifying created metric..."
         [[ "$(get_metric models_created_total 2)" == "2" ]] || { echo "Created metric failed (expected 2)"; exit 1; }
-        printf 'Created metric OK\n\n'
+        echo "Created metric OK"
+        echo
 
         # Test 4: List models
         echo "Listing models..."
         LIST=$(http_request GET "${BASE_URL}/api/models" 200)
         [[ $(echo "$LIST" | jq -e 'length') -eq 2 ]] || { echo "List count failed (expected 2)"; exit 1; }
-        printf 'List models OK\n\n'
+        echo "List models OK"
+        echo
 
         # Test 5: Get single model
         echo "Getting single model..."
         MODEL=$(http_request GET "${BASE_URL}/api/models/gpt-4" 200)
         [[ $(echo "$MODEL" | jq -e -r '.name') == "gpt-4" ]] || { echo "Get model name failed"; exit 1; }
         [[ $(echo "$MODEL" | jq -e -r '.url') == "https://api.openai.com/v1/models/gpt-4" ]] || { echo "Get model URL failed"; exit 1; }
-        printf 'Get model OK\n\n'
+        echo "Get model OK"
+        echo
 
         # Test 6: Verify read metric (1 list + 1 get = 2 reads)
         echo "Verifying read metric..."
         [[ "$(get_metric models_read_total 2)" == "2" ]] || { echo "Read metric failed (expected 2)"; exit 1; }
-        printf 'Read metric OK\n\n'
+        echo "Read metric OK"
+        echo
 
         # Test 7: Get non-existent model (404)
         echo "Testing 404 response..."
         http_code=$(curl -sw '%{http_code}' -o /dev/null --max-time 5 "${BASE_URL}/api/models/nonexistent" || true)
         [[ "$http_code" == "404" ]] || { echo "Expected 404, got $http_code"; exit 1; }
-        printf '404 handling OK\n\n'
+        echo "404 handling OK"
+        echo
 
         # Test 8: Update model with HTTP status validation
         echo "Updating model..."
@@ -179,7 +186,8 @@ jobs:
         [[ $(echo "$MODEL" | jq -e -r '.url') == "https://api.openai.com/v1/models/gpt-4-turbo" ]] || { echo "Update persistence failed"; exit 1; }
         
         [[ "$(get_metric models_updated_total 1)" == "1" ]] || { echo "Updated metric failed (expected 1)"; exit 1; }
-        printf 'Update model OK\n\n'
+        echo "Update model OK"
+        echo
 
         # Test 9: Delete model with HTTP status validation
         echo "Deleting model..."
@@ -190,7 +198,8 @@ jobs:
         # Verify deletion
         http_code=$(curl -sw '%{http_code}' -o /dev/null --max-time 5 "${BASE_URL}/api/models/claude-3" || true)
         [[ "$http_code" == "404" ]] || { echo "Expected 404 after delete, got $http_code"; exit 1; }
-        printf 'Delete model OK\n\n'
+        echo "Delete model OK"
+        echo
 
         echo "======================================="
         echo "All E2E tests passed!"
