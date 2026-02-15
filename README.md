@@ -13,6 +13,7 @@ A simple Go REST API server for managing AI models with SQLite persistence and P
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| GET | `/getkey` | Retrieve API access token |
 | GET | `/api/models` | List all models |
 | POST | `/api/models` | Create a new model |
 | GET | `/api/models/{name}` | Get a specific model |
@@ -52,27 +53,53 @@ DB_PATH=/path/to/custom.db ./model-server
 
 The server starts on port `8080`.
 
+### Authentication
+
+The model CRUD APIs are protected by an API token.
+
+- The server uses the `API_TOKEN` environment variable if set.
+- If `API_TOKEN` is not set, a random token is generated at startup.
+- The current token can be retrieved from the `/getkey` endpoint.
+
+```bash
+# Get the current API token
+curl http://localhost:8080/getkey
+# => {"token":"<your-token>"}
+```
+
+All model CRUD requests must include the token using the `X-API-Key` header
+(or `Authorization: Bearer <token>`):
+
+```bash
+TOKEN=$(curl -s http://localhost:8080/getkey | jq -r .token)
+```
+
 ## Example Usage
 
 ```bash
 # Create a model
 curl -X POST http://localhost:8080/api/models \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: $TOKEN" \
   -d '{"name": "gpt-4", "url": "https://api.openai.com/v1/models/gpt-4"}'
 
 # List all models
-curl http://localhost:8080/api/models
+curl http://localhost:8080/api/models \
+  -H "X-API-Key: $TOKEN"
 
 # Get a specific model
-curl http://localhost:8080/api/models/gpt-4
+curl http://localhost:8080/api/models/gpt-4 \
+  -H "X-API-Key: $TOKEN"
 
 # Update a model
 curl -X PUT http://localhost:8080/api/models/gpt-4 \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: $TOKEN" \
   -d '{"name": "gpt-4", "url": "https://api.openai.com/v1/models/gpt-4-turbo"}'
 
 # Delete a model
-curl -X DELETE http://localhost:8080/api/models/gpt-4
+curl -X DELETE http://localhost:8080/api/models/gpt-4 \
+  -H "X-API-Key: $TOKEN"
 
 # View Prometheus metrics
 curl http://localhost:8080/metrics

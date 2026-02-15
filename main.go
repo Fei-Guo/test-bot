@@ -1,16 +1,19 @@
 package main
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/gorilla/mux"
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	_ "github.com/mattn/go-sqlite3"
 )
 
 // Prometheus metrics
@@ -150,6 +153,7 @@ func (db *DB) Delete(name string) (bool, error) {
 }
 
 var db *DB
+var apiToken string
 
 func main() {
 	var err error
@@ -163,18 +167,74 @@ func main() {
 	}
 	defer db.Close()
 
-	router := mux.NewRouter()
+	apiToken = os.Getenv("API_TOKEN")
+	if apiToken == "" {
+		apiToken, err = generateToken()
+		if err != nil {
+			log.Fatalf("Failed to generate API token: %v", err)
+		}
+		log.Printf("Generated API token for server")
+	}
 
-	router.HandleFunc("/api/models", createModel).Methods("POST")
-	router.HandleFunc("/api/models", listModels).Methods("GET")
-	router.HandleFunc("/api/models/{name}", getModel).Methods("GET")
-	router.HandleFunc("/api/models/{name}", updateModel).Methods("PUT")
-	router.HandleFunc("/api/models/{name}", deleteModel).Methods("DELETE")
-	router.Handle("/metrics", promhttp.Handler()).Methods("GET")
+	router := newRouter()
 
 	port := ":8080"
 	log.Printf("Starting server on %s", port)
 	log.Fatal(http.ListenAndServe(port, router))
+}
+
+func newRouter() *mux.Router {
+	router := mux.NewRouter()
+
+	// Public endpoints
+	router.HandleFunc("/getkey", getKeyHandler).Methods("GET")
+	router.Handle("/metrics", promhttp.Handler()).Methods("GET")
+
+	// Protected API endpoints
+	apiRouter := router.PathPrefix("/api").Subrouter()
+	apiRouter.Use(authMiddleware)
+
+	apiRouter.HandleFunc("/models", createModel).Methods("POST")
+	apiRouter.HandleFunc("/models", listModels).Methods("GET")
+	apiRouter.HandleFunc("/models/{name}", getModel).Methods("GET")
+	apiRouter.HandleFunc("/models/{name}", updateModel).Methods("PUT")
+	apiRouter.HandleFunc("/models/{name}", deleteModel).Methods("DELETE")
+
+	return router
+}
+
+func generateToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func getKeyHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"token": apiToken,
+	})
+}
+
+func authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := r.Header.Get("X-API-Key")
+		if token == "" {
+			authHeader := r.Header.Get("Authorization")
+			if strings.HasPrefix(authHeader, "Bearer ") {
+				token = strings.TrimPrefix(authHeader, "Bearer ")
+			}
+		}
+
+		if token == "" || token != apiToken {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 func createModel(w http.ResponseWriter, r *http.Request) {
