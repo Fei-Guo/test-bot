@@ -14,6 +14,11 @@ A simple Go REST API server for managing AI models with SQLite persistence and P
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/getkey` | Retrieve API access token |
+| GET | `/api/users` | List all users |
+| POST | `/api/users` | Create a new user |
+| GET | `/api/users/{name}` | Get a specific user |
+| PUT | `/api/users/{name}` | Update a user |
+| DELETE | `/api/users/{name}` | Delete a user |
 | GET | `/api/models` | List all models |
 | POST | `/api/models` | Create a new model |
 | GET | `/api/models/{name}` | Get a specific model |
@@ -77,6 +82,30 @@ TOKEN=$(curl -s http://localhost:8080/getkey | jq -r .token)
 ## Example Usage
 
 ```bash
+# Create a user
+curl -X POST http://localhost:8080/api/users \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $TOKEN" \
+  -d '{"name": "alice", "email": "alice@example.com"}'
+
+# List all users
+curl http://localhost:8080/api/users \
+  -H "X-API-Key: $TOKEN"
+
+# Get a specific user
+curl http://localhost:8080/api/users/alice \
+  -H "X-API-Key: $TOKEN"
+
+# Update a user
+curl -X PUT http://localhost:8080/api/users/alice \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $TOKEN" \
+  -d '{"name": "alice", "email": "alice+updated@example.com"}'
+
+# Delete a user
+curl -X DELETE http://localhost:8080/api/users/alice \
+  -H "X-API-Key: $TOKEN"
+
 # Create a model
 curl -X POST http://localhost:8080/api/models \
   -H "Content-Type: application/json" \
