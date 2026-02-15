@@ -19,6 +19,8 @@ const (
 	retryDelay    = 100 * time.Millisecond
 )
 
+var e2eToken string
+
 // E2E test suite for the model server
 func TestE2E(t *testing.T) {
 	// Build the server binary
@@ -28,6 +30,8 @@ func TestE2E(t *testing.T) {
 	// Start the server
 	baseURL, cleanup := startServer(t, serverBinary)
 	defer cleanup()
+
+	e2eToken = fetchAPIToken(t, baseURL)
 
 	t.Run("PrometheusFormat", func(t *testing.T) {
 		testPrometheusFormat(t, baseURL)
@@ -130,6 +134,33 @@ func isServerReady(baseURL string) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
+func fetchAPIToken(t *testing.T, baseURL string) string {
+	t.Helper()
+
+	resp, err := http.Get(baseURL + "/getkey")
+	if err != nil {
+		t.Fatalf("Failed to get API token: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200 when getting token, got %d", resp.StatusCode)
+	}
+
+	var body struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("Failed to decode token response: %v", err)
+	}
+
+	if body.Token == "" {
+		t.Fatal("Received empty API token")
+	}
+
+	return body.Token
+}
+
 func testPrometheusFormat(t *testing.T, baseURL string) {
 	resp, err := http.Get(baseURL + "/metrics")
 	if err != nil {
@@ -185,7 +216,13 @@ func testVerifyCreatedMetric(t *testing.T, baseURL string) {
 }
 
 func testListModels(t *testing.T, baseURL string) {
-	resp, err := http.Get(baseURL + "/api/models")
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/models", nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.Header.Set("X-API-Key", e2eToken)
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("Failed to list models: %v", err)
 	}
@@ -206,7 +243,13 @@ func testListModels(t *testing.T, baseURL string) {
 }
 
 func testGetModel(t *testing.T, baseURL string) {
-	resp, err := http.Get(baseURL + "/api/models/gpt-4")
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/models/gpt-4", nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.Header.Set("X-API-Key", e2eToken)
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("Failed to get model: %v", err)
 	}
@@ -235,7 +278,13 @@ func testVerifyReadMetric(t *testing.T, baseURL string) {
 }
 
 func testNonExistentModel(t *testing.T, baseURL string) {
-	resp, err := http.Get(baseURL + "/api/models/nonexistent")
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/models/nonexistent", nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.Header.Set("X-API-Key", e2eToken)
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("Failed to make request: %v", err)
 	}
@@ -252,6 +301,7 @@ func testUpdateModel(t *testing.T, baseURL string) {
 	body, _ := json.Marshal(model)
 	req, _ := http.NewRequest(http.MethodPut, baseURL+"/api/models/gpt-4", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", e2eToken)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -264,7 +314,13 @@ func testUpdateModel(t *testing.T, baseURL string) {
 	}
 
 	// Verify update persisted
-	resp2, err := http.Get(baseURL + "/api/models/gpt-4")
+	req2, err := http.NewRequest(http.MethodGet, baseURL+"/api/models/gpt-4", nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req2.Header.Set("X-API-Key", e2eToken)
+
+	resp2, err := http.DefaultClient.Do(req2)
 	if err != nil {
 		t.Fatalf("Failed to get model after update: %v", err)
 	}
@@ -282,6 +338,7 @@ func testUpdateModel(t *testing.T, baseURL string) {
 
 func testDeleteModel(t *testing.T, baseURL string) {
 	req, _ := http.NewRequest(http.MethodDelete, baseURL+"/api/models/claude-3", nil)
+	req.Header.Set("X-API-Key", e2eToken)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("Failed to delete model: %v", err)
@@ -296,7 +353,13 @@ func testDeleteModel(t *testing.T, baseURL string) {
 	checkMetric(t, baseURL, "models_deleted_total", 1)
 
 	// Verify deletion
-	resp2, err := http.Get(baseURL + "/api/models/claude-3")
+	req2, err := http.NewRequest(http.MethodGet, baseURL+"/api/models/claude-3", nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req2.Header.Set("X-API-Key", e2eToken)
+
+	resp2, err := http.DefaultClient.Do(req2)
 	if err != nil {
 		t.Fatalf("Failed to make request: %v", err)
 	}
@@ -322,6 +385,9 @@ func httpRequest(t *testing.T, method, url string, expectedCode int, data interf
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if e2eToken != "" {
+		req.Header.Set("X-API-Key", e2eToken)
 	}
 
 	resp, err := http.DefaultClient.Do(req)
