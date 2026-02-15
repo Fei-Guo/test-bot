@@ -1,10 +1,14 @@
 package main
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -248,6 +252,11 @@ func (db *DB) DeleteUser(name string) (bool, error) {
 var db *DB
 var apiToken string
 
+type jwtClaims struct {
+	Name string `json:"name"`
+	Role string `json:"role,omitempty"`
+}
+
 func main() {
 	var err error
 	dbPath := os.Getenv("DB_PATH")
@@ -310,31 +319,143 @@ func generateToken() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+func generateJWT(name, role string) (string, error) {
+	if name == "" {
+		return "", errors.New("name is required")
+	}
+
+	header := map[string]string{
+		"alg": "HS256",
+		"typ": "JWT",
+	}
+	claims := jwtClaims{
+		Name: name,
+		Role: role,
+	}
+
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		return "", err
+	}
+	claimsJSON, err := json.Marshal(claims)
+	if err != nil {
+		return "", err
+	}
+
+	headerEnc := base64.RawURLEncoding.EncodeToString(headerJSON)
+	claimsEnc := base64.RawURLEncoding.EncodeToString(claimsJSON)
+	unsignedToken := headerEnc + "." + claimsEnc
+
+	mac := hmac.New(sha256.New, []byte(apiToken))
+	if _, err := mac.Write([]byte(unsignedToken)); err != nil {
+		return "", err
+	}
+	signature := mac.Sum(nil)
+	signatureEnc := base64.RawURLEncoding.EncodeToString(signature)
+
+	return unsignedToken + "." + signatureEnc, nil
+}
+
+func parseAndValidateJWT(token string) (jwtClaims, error) {
+	var claims jwtClaims
+
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return claims, errors.New("invalid token format")
+	}
+
+	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return claims, errors.New("invalid token header encoding")
+	}
+
+	var header map[string]string
+	if err := json.Unmarshal(headerBytes, &header); err != nil {
+		return claims, errors.New("invalid token header")
+	}
+	if header["alg"] != "HS256" || header["typ"] != "JWT" {
+		return claims, errors.New("unsupported token header")
+	}
+
+	claimsBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return claims, errors.New("invalid token payload encoding")
+	}
+	if err := json.Unmarshal(claimsBytes, &claims); err != nil {
+		return claims, errors.New("invalid token payload")
+	}
+
+	mac := hmac.New(sha256.New, []byte(apiToken))
+	unsignedToken := parts[0] + "." + parts[1]
+	if _, err := mac.Write([]byte(unsignedToken)); err != nil {
+		return claims, errors.New("failed to compute token signature")
+	}
+	expectedSignature := mac.Sum(nil)
+
+	signatureBytes, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return claims, errors.New("invalid token signature encoding")
+	}
+
+	if !hmac.Equal(signatureBytes, expectedSignature) {
+		return claims, errors.New("invalid token signature")
+	}
+
+	if claims.Name == "" {
+		return claims, errors.New("invalid token claims")
+	}
+
+	return claims, nil
+}
+
 func getKeyHandler(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	role := r.URL.Query().Get("role")
+	if name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+
+	token, err := generateJWT(name, role)
+	if err != nil {
+		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
-		"token": apiToken,
-	})
+	response := map[string]string{
+		"token": token,
+		"name":  name,
+	}
+	if role != "" {
+		response["role"] = role
+	}
+	json.NewEncoder(w).Encode(response)
 }
 
 func authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := r.Header.Get("X-API-Key")
-		if token == "" {
-			authHeader := r.Header.Get("Authorization")
-			if strings.HasPrefix(authHeader, "Bearer ") {
-				token = strings.TrimPrefix(authHeader, "Bearer ")
+			if token == "" {
+				authHeader := r.Header.Get("Authorization")
+				if strings.HasPrefix(authHeader, "Bearer ") {
+					token = strings.TrimPrefix(authHeader, "Bearer ")
+				}
 			}
-		}
 
-		if token == "" || token != apiToken {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
+			if token == "" {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
 
-		next.ServeHTTP(w, r)
-	})
-}
+			if _, err := parseAndValidateJWT(token); err != nil {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
 
 func createUser(w http.ResponseWriter, r *http.Request) {
 	var user User

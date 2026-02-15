@@ -153,7 +153,7 @@ func isServerReady(baseURL string) bool {
 func fetchAPIToken(t *testing.T, baseURL string) string {
 	t.Helper()
 
-	resp, err := http.Get(baseURL + "/getkey")
+	resp, err := http.Get(baseURL + "/getkey?name=e2e-user")
 	if err != nil {
 		t.Fatalf("Failed to get API token: %v", err)
 	}
@@ -165,6 +165,7 @@ func fetchAPIToken(t *testing.T, baseURL string) string {
 
 	var body struct {
 		Token string `json:"token"`
+		Name  string `json:"name"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("Failed to decode token response: %v", err)
@@ -172,6 +173,9 @@ func fetchAPIToken(t *testing.T, baseURL string) string {
 
 	if body.Token == "" {
 		t.Fatal("Received empty API token")
+	}
+	if body.Name != "e2e-user" {
+		t.Fatalf("Expected name 'e2e-user', got '%s'", body.Name)
 	}
 
 	return body.Token

@@ -23,12 +23,22 @@ func setupTestServer(t *testing.T) (*httptest.Server, *DB, string) {
 	}
 
 	// Use the same global DB and router setup as the main server.
-	apiToken = "test-token"
+	apiToken = "test-secret"
 	db = testDB
 
 	router := newRouter()
 
 	return httptest.NewServer(router), testDB, dbFile.Name()
+}
+
+func newTestJWT(t *testing.T) string {
+	t.Helper()
+
+	token, err := generateJWT("test-user", "")
+	if err != nil {
+		t.Fatalf("Failed to generate test JWT: %v", err)
+	}
+	return token
 }
 
 func TestCreateModel(t *testing.T) {
@@ -45,7 +55,7 @@ func TestCreateModel(t *testing.T) {
 		t.Fatalf("Failed to create request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-API-Key", "test-token")
+	req.Header.Set("X-API-Key", newTestJWT(t))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -72,7 +82,7 @@ func TestCreateWithoutName(t *testing.T) {
 		t.Fatalf("Failed to create request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-API-Key", "test-token")
+	req.Header.Set("X-API-Key", newTestJWT(t))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -97,7 +107,7 @@ func TestGetModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create request: %v", err)
 	}
-	req.Header.Set("X-API-Key", "test-token")
+	req.Header.Set("X-API-Key", newTestJWT(t))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -119,7 +129,7 @@ func TestDeleteModel(t *testing.T) {
 	db.Create(Model{Name: "gpt-4", URL: "https://api.openai.com/v1/models/gpt-4"})
 
 	req, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/models/gpt-4", nil)
-	req.Header.Set("X-API-Key", "test-token")
+	req.Header.Set("X-API-Key", newTestJWT(t))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("Failed: %v", err)
@@ -137,7 +147,7 @@ func TestGetKeyReturnsToken(t *testing.T) {
 	defer os.Remove(dbPath)
 	defer db.Close()
 
-	resp, err := http.Get(server.URL + "/getkey")
+	resp, err := http.Get(server.URL + "/getkey?name=alice")
 	if err != nil {
 		t.Fatalf("Failed to get key: %v", err)
 	}
@@ -149,13 +159,25 @@ func TestGetKeyReturnsToken(t *testing.T) {
 
 	var body struct {
 		Token string `json:"token"`
+		Name  string `json:"name"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
 
-	if body.Token != "test-token" {
-		t.Errorf("Expected token 'test-token', got '%s'", body.Token)
+	if body.Token == "" {
+		t.Fatal("Expected non-empty token")
+	}
+	if body.Name != "alice" {
+		t.Fatalf("Expected name 'alice', got '%s'", body.Name)
+	}
+
+	claims, err := parseAndValidateJWT(body.Token)
+	if err != nil {
+		t.Fatalf("Token validation failed: %v", err)
+	}
+	if claims.Name != "alice" {
+		t.Errorf("Expected name 'alice', got '%s'", claims.Name)
 	}
 }
 
@@ -191,7 +213,7 @@ func TestUnauthorizedWithWrongToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create request: %v", err)
 	}
-	req.Header.Set("X-API-Key", "wrong-token")
+	req.Header.Set("X-API-Key", "invalid.token.value")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -218,7 +240,7 @@ func TestCreateUser(t *testing.T) {
 		t.Fatalf("Failed to create request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-API-Key", "test-token")
+	req.Header.Set("X-API-Key", newTestJWT(t))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -245,7 +267,7 @@ func TestGetUser(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create request: %v", err)
 	}
-	req.Header.Set("X-API-Key", "test-token")
+	req.Header.Set("X-API-Key", newTestJWT(t))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -272,7 +294,7 @@ func TestDeleteUser(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create request: %v", err)
 	}
-	req.Header.Set("X-API-Key", "test-token")
+	req.Header.Set("X-API-Key", newTestJWT(t))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

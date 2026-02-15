@@ -13,7 +13,7 @@ A simple Go REST API server for managing AI models with SQLite persistence and P
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/getkey` | Retrieve API access token |
+| GET | `/getkey` | Retrieve JWT access token for a user |
 | GET | `/api/users` | List all users |
 | POST | `/api/users` | Create a new user |
 | GET | `/api/users/{name}` | Get a specific user |
@@ -60,23 +60,24 @@ The server starts on port `8080`.
 
 ### Authentication
 
-The model CRUD APIs are protected by an API token.
+The model CRUD APIs are protected by a JWT access token that encodes the user name.
 
-- The server uses the `API_TOKEN` environment variable if set.
-- If `API_TOKEN` is not set, a random token is generated at startup.
-- The current token can be retrieved from the `/getkey` endpoint.
+- The server uses the `API_TOKEN` environment variable as the JWT signing secret if set.
+- If `API_TOKEN` is not set, a random signing secret is generated at startup.
+- The current token can be retrieved from the `/getkey` endpoint by providing a user name.
+- An optional `role` query parameter is included in the token when provided.
 
 ```bash
-# Get the current API token
-curl http://localhost:8080/getkey
-# => {"token":"<your-token>"}
+# Get a JWT token for a user
+curl "http://localhost:8080/getkey?name=alice"
+# => {"token":"<your-token>","name":"alice"}
 ```
 
 All model CRUD requests must include the token using the `X-API-Key` header
 (or `Authorization: Bearer <token>`):
 
 ```bash
-TOKEN=$(curl -s http://localhost:8080/getkey | jq -r .token)
+TOKEN=$(curl -s "http://localhost:8080/getkey?name=alice" | jq -r .token)
 ```
 
 ## Example Usage
