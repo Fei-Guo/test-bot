@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
@@ -152,7 +153,11 @@ var db *DB
 
 func main() {
 	var err error
-	db, err = NewDB("models.db")
+	dbPath := os.Getenv("DB_PATH")
+	if dbPath == "" {
+		dbPath = "models.db"
+	}
+	db, err = NewDB(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
