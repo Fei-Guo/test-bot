@@ -203,3 +203,84 @@ func TestUnauthorizedWithWrongToken(t *testing.T) {
 		t.Errorf("Expected 401, got %d", resp.StatusCode)
 	}
 }
+
+func TestCreateUser(t *testing.T) {
+	server, db, dbPath := setupTestServer(t)
+	defer server.Close()
+	defer db.Close()
+	defer os.Remove(dbPath)
+
+	user := User{Name: "alice", Email: "alice@example.com"}
+	body, _ := json.Marshal(user)
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/users", bytes.NewBuffer(body))
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", "test-token")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("Expected 201, got %d", resp.StatusCode)
+	}
+}
+
+func TestGetUser(t *testing.T) {
+	server, db, dbPath := setupTestServer(t)
+	defer server.Close()
+	defer os.Remove(dbPath)
+	defer db.Close()
+
+	if err := db.CreateUser(User{Name: "alice", Email: "alice@example.com"}); err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/api/users/alice", nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.Header.Set("X-API-Key", "test-token")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestDeleteUser(t *testing.T) {
+	server, db, dbPath := setupTestServer(t)
+	defer server.Close()
+	defer os.Remove(dbPath)
+	defer db.Close()
+
+	if err := db.CreateUser(User{Name: "alice", Email: "alice@example.com"}); err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, server.URL+"/api/users/alice", nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.Header.Set("X-API-Key", "test-token")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("Expected 204, got %d", resp.StatusCode)
+	}
+}

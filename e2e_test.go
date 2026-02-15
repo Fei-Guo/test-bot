@@ -72,6 +72,22 @@ func TestE2E(t *testing.T) {
 	t.Run("DeleteModel", func(t *testing.T) {
 		testDeleteModel(t, baseURL)
 	})
+
+	t.Run("CreateUsers", func(t *testing.T) {
+		testCreateUsers(t, baseURL)
+	})
+
+	t.Run("ListUsers", func(t *testing.T) {
+		testListUsers(t, baseURL)
+	})
+
+	t.Run("GetUser", func(t *testing.T) {
+		testGetUser(t, baseURL)
+	})
+
+	t.Run("DeleteUser", func(t *testing.T) {
+		testDeleteUser(t, baseURL)
+	})
 }
 
 func buildServer(t *testing.T) string {
@@ -368,6 +384,105 @@ func testDeleteModel(t *testing.T, baseURL string) {
 	if resp2.StatusCode != http.StatusNotFound {
 		t.Errorf("Expected 404 after delete, got %d", resp2.StatusCode)
 	}
+}
+
+func testCreateUsers(t *testing.T, baseURL string) {
+	user1 := User{Name: "alice", Email: "alice@example.com"}
+	resp := httpRequest(t, http.MethodPost, baseURL+"/api/users", http.StatusCreated, user1)
+	var result1 User
+	if err := json.Unmarshal(resp, &result1); err != nil {
+		t.Fatalf("Failed to decode create user response: %v", err)
+	}
+	if result1.Name != user1.Name || result1.Email != user1.Email {
+		t.Error("Create response validation failed for alice")
+	}
+
+	user2 := User{Name: "bob", Email: "bob@example.com"}
+	resp = httpRequest(t, http.MethodPost, baseURL+"/api/users", http.StatusCreated, user2)
+	var result2 User
+	if err := json.Unmarshal(resp, &result2); err != nil {
+		t.Fatalf("Failed to decode create user response: %v", err)
+	}
+	if result2.Name != user2.Name || result2.Email != user2.Email {
+		t.Error("Create response validation failed for bob")
+	}
+}
+
+func testListUsers(t *testing.T, baseURL string) {
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/users", nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.Header.Set("X-API-Key", e2eToken)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Failed to list users: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", resp.StatusCode)
+	}
+
+	var users []User
+	if err := json.NewDecoder(resp.Body).Decode(&users); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if len(users) != 2 {
+		t.Errorf("Expected 2 users, got %d", len(users))
+	}
+}
+
+func testGetUser(t *testing.T, baseURL string) {
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/users/alice", nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.Header.Set("X-API-Key", e2eToken)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Failed to get user: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", resp.StatusCode)
+	}
+
+	var user User
+	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if user.Name != "alice" {
+		t.Errorf("Expected name 'alice', got '%s'", user.Name)
+	}
+	if user.Email != "alice@example.com" {
+		t.Errorf("Expected email 'alice@example.com', got '%s'", user.Email)
+	}
+}
+
+func testDeleteUser(t *testing.T, baseURL string) {
+	req, err := http.NewRequest(http.MethodDelete, baseURL+"/api/users/bob", nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.Header.Set("X-API-Key", e2eToken)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Failed to delete user: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("Expected 204, got %d", resp.StatusCode)
+	}
+
+	_ = httpRequest(t, http.MethodGet, baseURL+"/api/users/bob", http.StatusNotFound, nil)
 }
 
 func httpRequest(t *testing.T, method, url string, expectedCode int, data interface{}) []byte {
