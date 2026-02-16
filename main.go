@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -252,6 +253,10 @@ func (db *DB) DeleteUser(name string) (bool, error) {
 var db *DB
 var apiToken string
 
+type contextKey string
+
+const claimsContextKey contextKey = "jwtClaims"
+
 type jwtClaims struct {
 	Name string `json:"name"`
 	Role string `json:"role,omitempty"`
@@ -296,11 +301,13 @@ func newRouter() *mux.Router {
 	apiRouter := router.PathPrefix("/api").Subrouter()
 	apiRouter.Use(authMiddleware)
 
-	apiRouter.HandleFunc("/models", createModel).Methods("POST")
-	apiRouter.HandleFunc("/models", listModels).Methods("GET")
-	apiRouter.HandleFunc("/models/{name}", getModel).Methods("GET")
-	apiRouter.HandleFunc("/models/{name}", updateModel).Methods("PUT")
-	apiRouter.HandleFunc("/models/{name}", deleteModel).Methods("DELETE")
+	modelsRouter := apiRouter.NewRoute().Subrouter()
+	modelsRouter.Use(requireRegisteredUser)
+	modelsRouter.HandleFunc("/models", createModel).Methods("POST")
+	modelsRouter.HandleFunc("/models", listModels).Methods("GET")
+	modelsRouter.HandleFunc("/models/{name}", getModel).Methods("GET")
+	modelsRouter.HandleFunc("/models/{name}", updateModel).Methods("PUT")
+	modelsRouter.HandleFunc("/models/{name}", deleteModel).Methods("DELETE")
 
 	apiRouter.HandleFunc("/users", createUser).Methods("POST")
 	apiRouter.HandleFunc("/users", listUsers).Methods("GET")
@@ -408,6 +415,11 @@ func parseAndValidateJWT(token string) (jwtClaims, error) {
 	return claims, nil
 }
 
+func claimsFromContext(ctx context.Context) (jwtClaims, bool) {
+	claims, ok := ctx.Value(claimsContextKey).(jwtClaims)
+	return claims, ok
+}
+
 func getKeyHandler(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	role := r.URL.Query().Get("role")
@@ -436,26 +448,50 @@ func getKeyHandler(w http.ResponseWriter, r *http.Request) {
 func authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := r.Header.Get("X-API-Key")
-			if token == "" {
-				authHeader := r.Header.Get("Authorization")
-				if strings.HasPrefix(authHeader, "Bearer ") {
-					token = strings.TrimPrefix(authHeader, "Bearer ")
-				}
+		if token == "" {
+			authHeader := r.Header.Get("Authorization")
+			if strings.HasPrefix(authHeader, "Bearer ") {
+				token = strings.TrimPrefix(authHeader, "Bearer ")
 			}
+		}
 
-			if token == "" {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
+		if token == "" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 
-			if _, err := parseAndValidateJWT(token); err != nil {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
+		claims, err := parseAndValidateJWT(token)
+		if err != nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 
-			next.ServeHTTP(w, r)
-		})
-	}
+		ctx := context.WithValue(r.Context(), claimsContextKey, claims)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func requireRegisteredUser(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := claimsFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		_, exists, err := db.GetUser(claims.Name)
+		if err != nil {
+			http.Error(w, "Failed to validate user", http.StatusInternalServerError)
+			return
+		}
+		if !exists {
+			http.Error(w, "user not registered", http.StatusForbidden)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
 
 func createUser(w http.ResponseWriter, r *http.Request) {
 	var user User

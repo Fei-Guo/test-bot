@@ -1,5 +1,12 @@
 # Binaries
 model-server
+*.exe
+*.dll
+*.so
+*.dylib
+*.bin
+*.a
+*.o
 
 # Database files
 *.db
@@ -7,3 +14,9 @@ model-server
 # Go build cache
 *.test
 *.out
+
+# Vendor binaries
+vendor/bin/
+
+# Vendor
+vendor/
