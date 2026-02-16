@@ -32,6 +32,7 @@ func TestE2E(t *testing.T) {
 	defer cleanup()
 
 	e2eToken = fetchAPIToken(t, baseURL)
+	registerTokenUser(t, baseURL)
 
 	t.Run("PrometheusFormat", func(t *testing.T) {
 		testPrometheusFormat(t, baseURL)
@@ -179,6 +180,13 @@ func fetchAPIToken(t *testing.T, baseURL string) string {
 	}
 
 	return body.Token
+}
+
+func registerTokenUser(t *testing.T, baseURL string) {
+	t.Helper()
+
+	user := User{Name: "e2e-user", Email: "e2e-user@example.com"}
+	_ = httpRequest(t, http.MethodPost, baseURL+"/api/users", http.StatusCreated, user)
 }
 
 func testPrometheusFormat(t *testing.T, baseURL string) {
@@ -434,8 +442,8 @@ func testListUsers(t *testing.T, baseURL string) {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
 
-	if len(users) != 2 {
-		t.Errorf("Expected 2 users, got %d", len(users))
+	if len(users) != 3 {
+		t.Errorf("Expected 3 users, got %d", len(users))
 	}
 }
 

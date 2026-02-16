@@ -66,6 +66,7 @@ The model CRUD APIs are protected by a JWT access token that encodes the user na
 - If `API_TOKEN` is not set, a random signing secret is generated at startup.
 - The current token can be retrieved from the `/getkey` endpoint by providing a user name.
 - An optional `role` query parameter is included in the token when provided.
+- Model CRUD requests require the token's user name to be registered in the users table.
 
 ```bash
 # Get a JWT token for a user
